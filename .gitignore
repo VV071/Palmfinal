@@ -1,0 +1,11 @@
+# Node modules
+node_modules/
+
+# Firebase service account
+firebase-service-account.json
+
+# Environment variables
+.env
+
+# Uploads folder (if storing user uploads)
+uploads/
