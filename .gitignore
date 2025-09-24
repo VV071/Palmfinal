@@ -2,7 +2,7 @@
 node_modules/
 
 # Firebase service account
-firebase-service-account.json
+serviceAccount.json
 
 # Environment variables
 .env
