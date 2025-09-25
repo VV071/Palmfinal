@@ -64,7 +64,7 @@ emailTransporter.verify()
   .catch(err => console.log('❌ Email transporter error:', err));
 
 // ------------------ FIREBASE ------------------
-const serviceAccount = require("./serviceAccount.json");
+const serviceAccount = require(process.env.FIREBASE_SERVICE_ACCOUNT);
 const firebaseOptions = {
   credential: admin.credential.cert(serviceAccount)
 };
