@@ -367,3 +367,92 @@ app.post('/webhook/razorpay-topup', express.raw({ type: 'application/json' }), a
     return res.status(500).send('webhook error');
   }
 });
+// ---------- KYC Endpoints ----------
+
+// Endpoint: Get DigiLocker OAuth URL
+app.get('/kyc/digilocker/url', authenticateToken, async (req, res) => {
+  try {
+    // Your backend should generate DigiLocker OAuth URL here
+    // For example, redirect_uri points back to your backend callback
+    const clientId = process.env.DIGILOCKER_CLIENT_ID;
+    const redirectUri = process.env.DIGILOCKER_REDIRECT_URI;
+    const state = req.user.userId; // use userId as state
+    const authUrl = `https://digilocker.gov.in/public/oauth2/1/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=org.gov.digilocker.userprofile&state=${state}`;
+    return res.json({ success: true, authUrl });
+  } catch (err) {
+    console.error('digilocker url err', err);
+    return res.status(500).json({ success: false, error: 'Failed to generate DigiLocker URL' });
+  }
+});
+
+// Endpoint: Submit KYC documents (PAN/Aadhaar images)
+app.post('/kyc/submit', authenticateToken, async (req, res) => {
+  try {
+    if (!req.files?.pan || !req.files?.aadhaar) {
+      return res.status(400).json({ success: false, error: 'PAN and Aadhaar images required' });
+    }
+
+    const panFile = req.files.pan;
+    const aadhaarFile = req.files.aadhaar;
+
+    // RazorpayX KYC API endpoint: POST /v1/kyc
+    const razorpayResp = await axios.post(
+      'https://api.razorpay.com/v1/kyc',
+      {
+        name: req.user.email, // or full name from your users collection
+        kyc_type: 'individual',
+        document: [
+          { type: 'pan', file: panFile.data.toString('base64') },
+          { type: 'aadhaar', file: aadhaarFile.data.toString('base64') }
+        ]
+      },
+      {
+        auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET },
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 20000
+      }
+    );
+
+    // Save RazorpayX KYC ID in Firestore
+    await db.collection('kyc').doc(req.user.userId).set({
+      kycId: razorpayResp.data.id,
+      status: razorpayResp.data.status || 'pending',
+      submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return res.json({ success: true, status: razorpayResp.data.status || 'pending' });
+  } catch (err) {
+    console.error('kyc submit err', err.response?.data || err.message);
+    return res.status(500).json({ success: false, error: 'KYC submission failed' });
+  }
+});
+
+// Endpoint: Get KYC status
+app.get('/kyc/status', authenticateToken, async (req, res) => {
+  try {
+    const kycDoc = await db.collection('kyc').doc(req.user.userId).get();
+    if (!kycDoc.exists) return res.json({ success: true, status: 'not_submitted' });
+
+    const kycData = kycDoc.data();
+    const kycId = kycData ? kycData.kycId : null;
+
+    if (!kycId) return res.json({ success: true, status: 'not_submitted' });
+
+    // Fetch status from RazorpayX
+    const razorpayResp = await axios.get(`https://api.razorpay.com/v1/kyc/${kycId}`, {
+      auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET },
+      timeout: 15000,
+    });
+
+    // Update Firestore with latest status
+    await db.collection('kyc').doc(req.user.userId).update({
+      status: razorpayResp.data.status,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return res.json({ success: true, status: razorpayResp.data.status });
+  } catch (err) {
+    console.error('kyc status err', err.response?.data || err.message);
+    return res.status(500).json({ success: false, error: 'Failed to fetch KYC status' });
+  }
+});
