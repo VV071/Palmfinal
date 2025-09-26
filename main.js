@@ -50,7 +50,7 @@ const EMAIL_FROM = process.env.EMAIL_FROM || 'noreply@palmpay.com';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
 // Email transporter configuration
-const emailTransporter = nodemailer.createTransport({
+const emailTransporter = nodemailer.createTransporter({
   service: 'gmail',
   auth: {
     user: process.env.EMAIL_USERNAME,
@@ -64,7 +64,7 @@ emailTransporter.verify()
   .catch(err => console.log('❌ Email transporter error:', err));
 
 // ------------------ FIREBASE ------------------
-const serviceAccount = (JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT));
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 const firebaseOptions = {
   credential: admin.credential.cert(serviceAccount)
 };
@@ -121,6 +121,36 @@ const verifyPassword = async (password, hashedPassword) => {
 const generateUserId = () => {
   return 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 };
+
+// NEW: Platform detection middleware
+const detectPlatform = (req, res, next) => {
+  const userAgent = req.get('User-Agent') || '';
+  const clientType = req.get('X-Client-Type') || '';
+  
+  // Determine platform based on user agent or custom header
+  let platform = 'web'; // default
+  
+  if (clientType.toLowerCase().includes('flutter') || 
+      clientType.toLowerCase().includes('mobile') ||
+      clientType.toLowerCase().includes('android') ||
+      clientType.toLowerCase().includes('ios')) {
+    platform = 'mobile';
+  } else if (userAgent.includes('Flutter') || 
+             userAgent.includes('Dart') ||
+             userAgent.includes('Mobile') ||
+             userAgent.includes('Android') ||
+             userAgent.includes('iPhone') ||
+             userAgent.includes('iPad')) {
+    platform = 'mobile';
+  }
+  
+  req.platform = platform;
+  console.log(`🔍 Detected platform: ${platform} for ${req.method} ${req.path}`);
+  next();
+};
+
+// Apply platform detection to all routes
+app.use(detectPlatform);
 
 // Enhanced email sending function
 const sendEmail = async (to, subject, htmlContent, textContent = null) => {
@@ -199,6 +229,75 @@ const generateResetEmailHTML = (name, resetToken, resetUrl) => {
     </body>
     </html>
   `;
+};
+
+// ------------------ PLATFORM-AWARE USER DATA CREATION ------------------
+
+// Create platform-specific user data
+const createUserData = (platform, userData) => {
+  const baseData = {
+    userId: userData.userId,
+    email: userData.email,
+    name: userData.name || '',
+    password: userData.password,
+    platform: platform,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    isActive: true
+  };
+
+  if (platform === 'mobile') {
+    // Mobile app specific fields
+    return {
+      ...baseData,
+      balance: 0,
+      kycStatus: 'pending',
+      isKycVerified: false,
+      isPalmRegistered: false,
+      deviceInfo: {
+        platform: 'mobile',
+        registeredDevices: []
+      }
+    };
+  } else {
+    // Web app specific fields
+    return {
+      ...baseData,
+      profile: {
+        preferences: {},
+        settings: {}
+      },
+      webAccess: {
+        lastLoginDevice: null,
+        browserInfo: null
+      }
+    };
+  }
+};
+
+// Get platform-specific user response
+const getUserResponse = (platform, userData) => {
+  const baseResponse = {
+    userId: userData.userId,
+    email: userData.email,
+    name: userData.name,
+    platform: userData.platform
+  };
+
+  if (platform === 'mobile') {
+    return {
+      ...baseResponse,
+      balance: userData.balance || 0,
+      kycStatus: userData.kycStatus || 'pending',
+      isKycVerified: userData.isKycVerified || false,
+      isPalmRegistered: userData.isPalmRegistered || false
+    };
+  } else {
+    return {
+      ...baseResponse,
+      profile: userData.profile || {},
+      webAccess: userData.webAccess || {}
+    };
+  }
 };
 
 // ------------------ MIDDLEWARE ------------------
@@ -291,10 +390,13 @@ const verifyResetToken = (req, res, next) => {
 
 // ------------------ AUTHENTICATION APIS ------------------
 
-// User Signup (keeping your existing implementation)
+// Enhanced User Signup with Platform Detection
 app.post('/auth/signup', validateInput(['email', 'password']), async (req, res) => {
   try {
     const { email, password, name } = req.body;
+    const platform = req.platform;
+
+    console.log(`📱 Signup request from ${platform} platform`);
 
     // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -325,22 +427,16 @@ app.post('/auth/signup', validateInput(['email', 'password']), async (req, res) 
       });
     }
 
-    // Create new user
+    // Create new user with platform-specific data
     const userId = generateUserId();
     const hashedPassword = await hashPassword(password);
 
-    const userData = {
+    const userData = createUserData(platform, {
       userId,
       email,
-      name: name || '',
-      password: hashedPassword,
-      balance: 0,
-      kycStatus: 'pending',
-      isKycVerified: false,
-      isPalmRegistered: false,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      isActive: true
-    };
+      name,
+      password: hashedPassword
+    });
 
     await db.collection('users').doc(userId).set(userData);
 
@@ -348,18 +444,10 @@ app.post('/auth/signup', validateInput(['email', 'password']), async (req, res) 
 
     res.status(201).json({
       success: true,
-      message: 'User account created successfully',
+      message: `User account created successfully for ${platform} platform`,
       data: {
         token,
-        user: {
-          userId,
-          email,
-          name: name || '',
-          balance: 0,
-          kycStatus: 'pending',
-          isKycVerified: false,
-          isPalmRegistered: false
-        }
+        user: getUserResponse(platform, userData)
       }
     });
 
@@ -373,10 +461,13 @@ app.post('/auth/signup', validateInput(['email', 'password']), async (req, res) 
   }
 });
 
-// User Login (keeping your existing implementation)
+// Enhanced User Login with Platform Validation
 app.post('/auth/login', validateInput(['email', 'password']), async (req, res) => {
   try {
     const { email, password } = req.body;
+    const platform = req.platform;
+
+    console.log(`🔐 Login request from ${platform} platform`);
 
     // Find user by email
     const userQuery = await db.collection('users').where('email', '==', email).limit(1).get();
@@ -401,6 +492,17 @@ app.post('/auth/login', validateInput(['email', 'password']), async (req, res) =
       });
     }
 
+    // Platform access control (OPTIONAL - commented out to allow cross-platform access)
+    /*
+    if (userData.platform && userData.platform !== platform) {
+      return res.status(403).json({
+        success: false,
+        error: `This account was registered for ${userData.platform} platform. Please use the correct platform to login.`,
+        code: 'PLATFORM_MISMATCH'
+      });
+    }
+    */
+
     // Verify password
     const isPasswordValid = await verifyPassword(password, userData.password);
     if (!isPasswordValid) {
@@ -411,22 +513,25 @@ app.post('/auth/login', validateInput(['email', 'password']), async (req, res) =
       });
     }
 
+    // Update last login info based on platform
+    const updateData = {
+      lastLoginAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    if (platform === 'web') {
+      updateData['webAccess.lastLoginDevice'] = req.get('User-Agent');
+    }
+
+    await userDoc.ref.update(updateData);
+
     const token = generateToken(email, userData.userId);
 
     res.json({
       success: true,
-      message: 'Login successful',
+      message: `Login successful from ${platform} platform`,
       data: {
         token,
-        user: {
-          userId: userData.userId,
-          email: userData.email,
-          name: userData.name,
-          balance: userData.balance,
-          kycStatus: userData.kycStatus,
-          isKycVerified: userData.isKycVerified || false,
-          isPalmRegistered: userData.isPalmRegistered || false
-        }
+        user: getUserResponse(userData.platform || platform, userData)
       }
     });
 
@@ -440,7 +545,7 @@ app.post('/auth/login', validateInput(['email', 'password']), async (req, res) =
   }
 });
 
-// ------------------ PASSWORD RESET APIS ------------------
+// ------------------ PASSWORD RESET APIS (Cross-Platform) ------------------
 
 // Request Password Reset
 app.post('/auth/forgot-password', resetLimiter, validateInput(['email']), async (req, res) => {
@@ -477,8 +582,13 @@ app.post('/auth/forgot-password', resetLimiter, validateInput(['email']), async 
       // Generate reset token
       const resetToken = generateResetToken(email, userData.userId);
       
-      // Create reset URL (for Flutter app, this would be a deep link)
-      const resetUrl = `${FRONTEND_URL}/reset-password?token=${resetToken}`;
+      // Create reset URL based on platform
+      let resetUrl;
+      if (userData.platform === 'mobile') {
+        resetUrl = `palmpay://reset-password?token=${resetToken}`;
+      } else {
+        resetUrl = `${FRONTEND_URL}/reset-password?token=${resetToken}`;
+      }
       
       // Store reset token in user's document with expiry
       await userDoc.ref.update({
@@ -516,7 +626,7 @@ app.post('/auth/forgot-password', resetLimiter, validateInput(['email']), async 
   }
 });
 
-// Verify Reset Token (optional endpoint to check if token is valid)
+// Verify Reset Token (Cross-Platform)
 app.post('/auth/verify-reset-token', validateInput(['token']), async (req, res) => {
   try {
     const { token } = req.body;
@@ -565,6 +675,7 @@ app.post('/auth/verify-reset-token', validateInput(['token']), async (req, res) 
       message: 'Reset token is valid',
       data: {
         email: userData.email,
+        platform: userData.platform,
         expiresAt: userData.resetTokenExpiry.toDate().toISOString()
       }
     });
@@ -578,7 +689,7 @@ app.post('/auth/verify-reset-token', validateInput(['token']), async (req, res) 
   }
 });
 
-// Reset Password with Token
+// Reset Password with Token (Cross-Platform)
 app.post('/auth/reset-password', validateInput(['token', 'newPassword']), verifyResetToken, async (req, res) => {
   try {
     const { newPassword } = req.body;
@@ -645,6 +756,7 @@ app.post('/auth/reset-password', validateInput(['token', 'newPassword']), verify
         <div style="padding: 30px;">
           <p>Hello ${userData.name || 'User'},</p>
           <p>Your PalmPay account password has been successfully updated.</p>
+          <p>Platform: ${userData.platform}</p>
           <p>If you didn't make this change, please contact our support team immediately.</p>
           <div style="background: #d4edda; border: 1px solid #c3e6cb; padding: 15px; border-radius: 5px; margin: 20px 0;">
             <strong>✅ Security Tip:</strong> Always use a strong, unique password for your account.
@@ -668,7 +780,8 @@ app.post('/auth/reset-password', validateInput(['token', 'newPassword']), verify
       message: 'Password has been reset successfully',
       data: {
         passwordUpdated: true,
-        confirmationEmailSent: true
+        confirmationEmailSent: true,
+        platform: userData.platform
       }
     });
 
@@ -682,7 +795,7 @@ app.post('/auth/reset-password', validateInput(['token', 'newPassword']), verify
   }
 });
 
-// Change Password (for authenticated users)
+// Change Password (Cross-Platform)
 app.post('/auth/change-password', authenticateToken, validateInput(['currentPassword', 'newPassword']), async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
@@ -746,116 +859,49 @@ app.post('/auth/change-password', authenticateToken, validateInput(['currentPass
   }
 });
 
-// ------------------ EXISTING APIS (keeping all your original functionality) ------------------
+// ------------------ MOBILE-ONLY ENDPOINTS ------------------
 
-// Wallet APIs
-app.get('/wallet', authenticateToken, async (req, res) => {
+// Palm Registration - Mobile Only
+app.post("/registerPalm", authenticateToken, async (req, res) => {
+  if (req.platform !== 'mobile' && req.userData.platform !== 'mobile') {
+    return res.status(403).json({ 
+      success: false, 
+      error: "Palm registration is only available on mobile app",
+      code: 'MOBILE_ONLY_FEATURE'
+    });
+  }
+
+  const { landmarks } = req.body;
+  if (!landmarks) return res.status(400).json({ success: false, error: "Missing landmarks" });
+
   try {
-    const transactionsSnapshot = await db
-      .collection('transactions')
-      .where('userId', '==', req.user.userId)
-      .orderBy('timestamp', 'desc')
-      .limit(10)
-      .get();
-
-    const transactions = [];
-    transactionsSnapshot.forEach(doc => {
-      transactions.push({ id: doc.id, ...doc.data() });
+    await db.collection("palmIndex").doc(req.user.userId).set({ 
+      landmarks,
+      registeredAt: admin.firestore.FieldValue.serverTimestamp()
     });
-
-    res.json({
-      success: true,
-      data: {
-        balance: req.userData.balance || 0,
-        currency: 'INR',
-        transactions: transactions,
-        totalTransactions: transactions.length
-      }
+    
+    // Update user's palm registration status
+    await db.collection('users').doc(req.user.userId).update({
+      isPalmRegistered: true
     });
-
-  } catch (error) {
-    console.error('Get wallet error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-      code: 'SERVER_ERROR'
-    });
+    
+    res.json({ success: true, message: "Palm template registered successfully" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: "Palm registration failed" });
   }
 });
 
-app.post('/wallet/razorpay/verify', authenticateToken, validateInput(['paymentId', 'orderId', 'signature']), async (req, res) => {
-  try {
-    const { paymentId, orderId, signature } = req.body;
-
-    const generatedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-      .update(orderId + '|' + paymentId)
-      .digest('hex');
-
-    if (generatedSignature !== signature) {
-      return res.status(400).json({
-        success: false,
-        error: 'Payment verification failed - Invalid signature',
-        code: 'INVALID_SIGNATURE'
-      });
-    }
-
-    const transactionQuery = await db
-      .collection('transactions')
-      .where('razorpayOrderId', '==', orderId)
-      .where('status', '==', 'pending')
-      .limit(1)
-      .get();
-
-    if (transactionQuery.empty) {
-      return res.status(404).json({
-        success: false,
-        error: 'Transaction not found',
-        code: 'TRANSACTION_NOT_FOUND'
-      });
-    }
-
-    const transactionDoc = transactionQuery.docs[0];
-    const transactionData = transactionDoc.data();
-    const topupAmount = transactionData.amount;
-
-    const userRef = db.collection('users').doc(req.user.userId);
-    await userRef.update({
-      balance: admin.firestore.FieldValue.increment(topupAmount)
-    });
-
-    await transactionDoc.ref.update({
-      status: 'completed',
-      paymentId: paymentId,
-      completedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    const updatedUser = await userRef.get();
-    const newBalance = updatedUser.data().balance;
-
-    res.json({
-      success: true,
-      message: 'Payment verified and wallet topped up successfully',
-      data: {
-        transactionId: transactionDoc.id,
-        newBalance: newBalance,
-        amountAdded: topupAmount,
-        currency: 'INR'
-      }
-    });
-
-  } catch (error) {
-    console.error('Razorpay verification error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Payment verification failed',
-      code: 'VERIFICATION_ERROR'
-    });
-  }
-});
-
-// Palm verification and all other existing endpoints...
+// Palm Verification Payment - Mobile Only
 app.post('/palm/verify', authenticateToken, validateInput(['landmarks', 'amount']), async (req, res) => {
+  if (req.platform !== 'mobile' && req.userData.platform !== 'mobile') {
+    return res.status(403).json({ 
+      success: false, 
+      error: "Palm verification is only available on mobile app",
+      code: 'MOBILE_ONLY_FEATURE'
+    });
+  }
+
   try {
     const { landmarks, amount, merchantId, description } = req.body;
 
@@ -961,67 +1007,92 @@ app.post('/palm/verify', authenticateToken, validateInput(['landmarks', 'amount'
   }
 });
 
-// All remaining original endpoints (login, registerPalm, wallet/topup, etc.)...
-app.post("/login", async (req, res) => {
-  const { userId, name } = req.body;
-  if (!userId || !name) return res.status(400).json({ success: false, error: "Missing params" });
+// KYC Verification - Mobile Only
+app.post("/kyc/verify", authenticateToken, upload.single("document"), async (req, res) => {
+  if (req.platform !== 'mobile' && req.userData.platform !== 'mobile') {
+    return res.status(403).json({ 
+      success: false, 
+      error: "KYC verification is only available on mobile app",
+      code: 'MOBILE_ONLY_FEATURE'
+    });
+  }
+
+  const file = req.file;
+  if (!file) return res.status(400).json({ success: false, error: "Missing document" });
 
   try {
-    const userRef = db.collection("users").doc(userId);
-    const userDoc = await userRef.get();
+    const destination = `kyc/${req.user.userId}/${file.originalname}`;
+    await bucket.upload(file.path, { destination });
+    const fileUrl = `gs://${bucket.name}/${destination}`;
 
-    if (!userDoc.exists) {
-      await userRef.set({ 
-        userId,
-        name, 
-        balance: 0, 
-        kycStatus: "pending",
-        isKycVerified: false,
-        isPalmRegistered: false,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        isActive: true
-      });
-    }
+    const verificationResult = { status: "pending" };
 
-    const user = await userRef.get();
-    const userData = user.data();
-
-    const token = generateToken(userData.email || userId, userId);
-
-    res.json({ 
-      success: true, 
-      user: userData,
-      token: token
+    await db.collection("users").doc(req.user.userId).update({
+      kycStatus: verificationResult.status,
+      kycDocumentUrl: fileUrl,
+      kycSubmittedAt: admin.firestore.FieldValue.serverTimestamp()
     });
+
+    res.json({ success: true, status: verificationResult.status });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, error: "Login failed" });
+    res.status(500).json({ success: false, error: "KYC verification failed" });
   }
 });
 
-app.post("/registerPalm", authenticateToken, async (req, res) => {
-  const { landmarks } = req.body;
-  if (!landmarks) return res.status(400).json({ success: false, error: "Missing landmarks" });
+// ------------------ WALLET APIS (Mobile Only) ------------------
+
+app.get('/wallet', authenticateToken, async (req, res) => {
+  if (req.platform !== 'mobile' && req.userData.platform !== 'mobile') {
+    return res.status(403).json({ 
+      success: false, 
+      error: "Wallet features are only available on mobile app",
+      code: 'MOBILE_ONLY_FEATURE'
+    });
+  }
 
   try {
-    await db.collection("palmIndex").doc(req.user.userId).set({ 
-      landmarks,
-      registeredAt: admin.firestore.FieldValue.serverTimestamp()
+    const transactionsSnapshot = await db
+      .collection('transactions')
+      .where('userId', '==', req.user.userId)
+      .orderBy('timestamp', 'desc')
+      .limit(10)
+      .get();
+
+    const transactions = [];
+    transactionsSnapshot.forEach(doc => {
+      transactions.push({ id: doc.id, ...doc.data() });
     });
-    
-    // Update user's palm registration status
-    await db.collection('users').doc(req.user.userId).update({
-      isPalmRegistered: true
+
+    res.json({
+      success: true,
+      data: {
+        balance: req.userData.balance || 0,
+        currency: 'INR',
+        transactions: transactions,
+        totalTransactions: transactions.length
+      }
     });
-    
-    res.json({ success: true, message: "Palm template registered successfully" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Palm registration failed" });
+
+  } catch (error) {
+    console.error('Get wallet error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      code: 'SERVER_ERROR'
+    });
   }
 });
 
 app.post("/wallet/topup", authenticateToken, async (req, res) => {
+  if (req.platform !== 'mobile' && req.userData.platform !== 'mobile') {
+    return res.status(403).json({ 
+      success: false, 
+      error: "Wallet top-up is only available on mobile app",
+      code: 'MOBILE_ONLY_FEATURE'
+    });
+  }
+
   const { amount } = req.body;
   if (!amount) return res.status(400).json({ success: false, error: "Missing amount" });
 
@@ -1048,6 +1119,211 @@ app.post("/wallet/topup", authenticateToken, async (req, res) => {
   }
 });
 
+app.post('/wallet/razorpay/verify', authenticateToken, validateInput(['paymentId', 'orderId', 'signature']), async (req, res) => {
+  if (req.platform !== 'mobile' && req.userData.platform !== 'mobile') {
+    return res.status(403).json({ 
+      success: false, 
+      error: "Payment verification is only available on mobile app",
+      code: 'MOBILE_ONLY_FEATURE'
+    });
+  }
+
+  try {
+    const { paymentId, orderId, signature } = req.body;
+
+    const generatedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(orderId + '|' + paymentId)
+      .digest('hex');
+
+    if (generatedSignature !== signature) {
+      return res.status(400).json({
+        success: false,
+        error: 'Payment verification failed - Invalid signature',
+        code: 'INVALID_SIGNATURE'
+      });
+    }
+
+    const transactionQuery = await db
+      .collection('transactions')
+      .where('razorpayOrderId', '==', orderId)
+      .where('status', '==', 'pending')
+      .limit(1)
+      .get();
+
+    if (transactionQuery.empty) {
+      return res.status(404).json({
+        success: false,
+        error: 'Transaction not found',
+        code: 'TRANSACTION_NOT_FOUND'
+      });
+    }
+
+    const transactionDoc = transactionQuery.docs[0];
+    const transactionData = transactionDoc.data();
+    const topupAmount = transactionData.amount;
+
+    const userRef = db.collection('users').doc(req.user.userId);
+    await userRef.update({
+      balance: admin.firestore.FieldValue.increment(topupAmount)
+    });
+
+    await transactionDoc.ref.update({
+      status: 'completed',
+      paymentId: paymentId,
+      completedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    const updatedUser = await userRef.get();
+    const newBalance = updatedUser.data().balance;
+
+    res.json({
+      success: true,
+      message: 'Payment verified and wallet topped up successfully',
+      data: {
+        transactionId: transactionDoc.id,
+        newBalance: newBalance,
+        amountAdded: topupAmount,
+        currency: 'INR'
+      }
+    });
+
+  } catch (error) {
+    console.error('Razorpay verification error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Payment verification failed',
+      code: 'VERIFICATION_ERROR'
+    });
+  }
+});
+
+app.get("/transactions/:userId", authenticateToken, async (req, res) => {
+  if (req.platform !== 'mobile' && req.userData.platform !== 'mobile') {
+    return res.status(403).json({ 
+      success: false, 
+      error: "Transaction history is only available on mobile app",
+      code: 'MOBILE_ONLY_FEATURE'
+    });
+  }
+
+  const { userId } = req.params;
+
+  if (userId !== req.user.userId) {
+    return res.status(403).json({ 
+      success: false, 
+      error: "Access denied" 
+    });
+  }
+
+  try {
+    const snapshot = await db
+      .collection("transactions")
+      .where("userId", "==", userId)
+      .orderBy("timestamp", "desc")
+      .get();
+
+    const transactions = [];
+    snapshot.forEach(doc => transactions.push({ id: doc.id, ...doc.data() }));
+
+    res.json({ success: true, transactions });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: "Failed to fetch transactions" });
+  }
+});
+
+// ------------------ LEGACY ENDPOINTS (for backward compatibility) ------------------
+
+// Legacy login endpoint (keeping for compatibility)
+app.post("/login", async (req, res) => {
+  const { userId, name } = req.body;
+  if (!userId || !name) return res.status(400).json({ success: false, error: "Missing params" });
+
+  try {
+    const userRef = db.collection("users").doc(userId);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      // Create legacy user with mobile platform
+      await userRef.set(createUserData('mobile', {
+        userId,
+        name, 
+        email: userId, // using userId as email for legacy users
+        password: await hashPassword('legacy_password') // placeholder password
+      }));
+    }
+
+    const user = await userRef.get();
+    const userData = user.data();
+
+    const token = generateToken(userData.email || userId, userId);
+
+    res.json({ 
+      success: true, 
+      user: getUserResponse('mobile', userData),
+      token: token
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: "Login failed" });
+  }
+});
+
+// ------------------ COMMON ENDPOINTS ------------------
+
+// Health Check
+app.get('/health', (req, res) => {
+  res.json({
+    success: true,
+    message: 'PalmPay backend is running',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    platform: req.platform,
+    features: {
+      passwordReset: true,
+      emailService: !!process.env.EMAIL_USERNAME,
+      platformDetection: true
+    }
+  });
+});
+
+// Get User Profile (Platform-aware)
+app.get('/profile', authenticateToken, async (req, res) => {
+  try {
+    const platform = req.userData.platform || req.platform;
+    
+    let responseData = {
+      user: getUserResponse(platform, req.userData)
+    };
+
+    // Add mobile-specific data if mobile user
+    if (platform === 'mobile') {
+      const palmDoc = await db.collection('palmIndex').doc(req.user.userId).get();
+      const isPalmRegistered = palmDoc.exists;
+
+      responseData.palm = {
+        isRegistered: isPalmRegistered,
+        registeredAt: isPalmRegistered ? palmDoc.data().registeredAt : null
+      };
+    }
+
+    res.json({
+      success: true,
+      data: responseData
+    });
+
+  } catch (error) {
+    console.error('Profile error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get profile',
+      code: 'PROFILE_ERROR'
+    });
+  }
+});
+
+// Webhook verification (platform-agnostic)
 app.post("/wallet/verify", bodyParser.json({ type: "application/json" }), async (req, res) => {
   const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
   const signature = req.headers["x-razorpay-signature"];
@@ -1095,113 +1371,13 @@ app.post("/wallet/verify", bodyParser.json({ type: "application/json" }), async 
   }
 });
 
-app.get("/transactions/:userId", authenticateToken, async (req, res) => {
-  const { userId } = req.params;
-
-  if (userId !== req.user.userId) {
-    return res.status(403).json({ 
-      success: false, 
-      error: "Access denied" 
-    });
-  }
-
-  try {
-    const snapshot = await db
-      .collection("transactions")
-      .where("userId", "==", userId)
-      .orderBy("timestamp", "desc")
-      .get();
-
-    const transactions = [];
-    snapshot.forEach(doc => transactions.push({ id: doc.id, ...doc.data() }));
-
-    res.json({ success: true, transactions });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Failed to fetch transactions" });
-  }
-});
-
-app.post("/kyc/verify", authenticateToken, upload.single("document"), async (req, res) => {
-  const file = req.file;
-  if (!file) return res.status(400).json({ success: false, error: "Missing document" });
-
-  try {
-    const destination = `kyc/${req.user.userId}/${file.originalname}`;
-    await bucket.upload(file.path, { destination });
-    const fileUrl = `gs://${bucket.name}/${destination}`;
-
-    const verificationResult = { status: "pending" };
-
-    await db.collection("users").doc(req.user.userId).update({
-      kycStatus: verificationResult.status,
-      kycDocumentUrl: fileUrl,
-      kycSubmittedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    res.json({ success: true, status: verificationResult.status });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "KYC verification failed" });
-  }
-});
-
-// Health Check
-app.get('/health', (req, res) => {
-  res.json({
-    success: true,
-    message: 'PalmPay backend is running',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    features: {
-      passwordReset: true,
-      emailService: !!process.env.EMAIL_USERNAME
-    }
-  });
-});
-
-// Get User Profile
-app.get('/profile', authenticateToken, async (req, res) => {
-  try {
-    const palmDoc = await db.collection('palmIndex').doc(req.user.userId).get();
-    const isPalmRegistered = palmDoc.exists;
-
-    res.json({
-      success: true,
-      data: {
-        user: {
-          userId: req.userData.userId,
-          email: req.userData.email,
-          name: req.userData.name,
-          balance: req.userData.balance,
-          kycStatus: req.userData.kycStatus,
-          isKycVerified: req.userData.isKycVerified || false,
-          isPalmRegistered: req.userData.isPalmRegistered || isPalmRegistered,
-          createdAt: req.userData.createdAt
-        },
-        palm: {
-          isRegistered: isPalmRegistered,
-          registeredAt: isPalmRegistered ? palmDoc.data().registeredAt : null
-        }
-      }
-    });
-
-  } catch (error) {
-    console.error('Profile error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get profile',
-      code: 'PROFILE_ERROR'
-    });
-  }
-});
-
 // Error handling
 app.use((req, res) => {
   res.status(404).json({
     success: false,
     error: 'Endpoint not found',
-    code: 'NOT_FOUND'
+    code: 'NOT_FOUND',
+    platform: req.platform
   });
 });
 
@@ -1210,7 +1386,8 @@ app.use((error, req, res, next) => {
   res.status(500).json({
     success: false,
     error: 'Internal server error',
-    code: 'SERVER_ERROR'
+    code: 'SERVER_ERROR',
+    platform: req.platform
   });
 });
 
@@ -1222,6 +1399,10 @@ app.listen(PORT, () => {
   console.log(`📊 Health check: http://localhost:${PORT}/health`);
   console.log(`📧 Email service: ${process.env.EMAIL_USERNAME ? 'Configured' : 'Not configured'}`);
   console.log(`🔐 Password reset: Enabled`);
+  console.log(`📱 Platform detection: Enabled`);
+  console.log(`✨ Features:`);
+  console.log(`  - Web app: Authentication, Password reset`);
+  console.log(`  - Mobile app: Full PalmPay features + Wallet + Palm verification`);
 });
 
 module.exports = app;
