@@ -6,6 +6,8 @@ const tf = require("@tensorflow/tfjs");
 const Razorpay = require("razorpay");
 const multer = require("multer");
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const cors = require("cors");
@@ -50,7 +52,7 @@ const EMAIL_FROM = process.env.EMAIL_FROM || 'noreply@palmpay.com';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
 // Email transporter configuration
-const emailTransporter = nodemailer.createTransporter({
+const emailTransporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: process.env.EMAIL_USERNAME,
@@ -64,7 +66,28 @@ emailTransporter.verify()
   .catch(err => console.log('❌ Email transporter error:', err));
 
 // ------------------ FIREBASE ------------------
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+// Allow FIREBASE_SERVICE_ACCOUNT to be either raw JSON or a path to a JSON file
+let serviceAccount;
+const serviceAccountEnv = process.env.FIREBASE_SERVICE_ACCOUNT || "";
+try {
+  if (serviceAccountEnv.trim().startsWith("{")) {
+    serviceAccount = JSON.parse(serviceAccountEnv);
+  } else if (serviceAccountEnv.trim().length > 0) {
+    const resolvedPath = path.isAbsolute(serviceAccountEnv)
+      ? serviceAccountEnv
+      : path.resolve(__dirname, serviceAccountEnv);
+    const fileContents = fs.readFileSync(resolvedPath, "utf8");
+    serviceAccount = JSON.parse(fileContents);
+  } else {
+    // Fallback to local serviceAccount.json if env not provided
+    const fallbackPath = path.resolve(__dirname, "serviceAccount.json");
+    const fileContents = fs.readFileSync(fallbackPath, "utf8");
+    serviceAccount = JSON.parse(fileContents);
+  }
+} catch (err) {
+  console.error("❌ Failed to load Firebase service account:", err.message);
+  process.exit(1);
+}
 const firebaseOptions = {
   credential: admin.credential.cert(serviceAccount)
 };
