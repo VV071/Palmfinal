@@ -20,10 +20,36 @@ const app = express();
 
 // Security middleware
 app.use(helmet());
+
+// Updated CORS configuration to handle WebContainer origins
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:8080'],
-  credentials: true
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or Postman)
+    if (!origin) return callback(null, true);
+    
+    // Allow all localhost variations and webcontainer origins
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'http://localhost:3001', 
+      'http://localhost:8080',
+      'https://palmfinale.onrender.com'
+    ];
+    
+    // Allow WebContainer origins (for StackBlitz, CodeSandbox, etc.)
+    if (origin.includes('webcontainer-api.io') || 
+        origin.includes('stackblitz.io') || 
+        origin.includes('codesandbox.io') ||
+        allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Client-Type']
 }));
+
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -52,7 +78,7 @@ const EMAIL_FROM = process.env.EMAIL_FROM || 'noreply@palmpay.com';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
 // Email transporter configuration
-const emailTransporter = nodemailer.createTransport({
+const emailTransporter = nodemailer.createTransporter({
   service: 'gmail',
   auth: {
     user: process.env.EMAIL_USERNAME,
@@ -515,17 +541,6 @@ app.post('/auth/login', validateInput(['email', 'password']), async (req, res) =
       });
     }
 
-    // Platform access control (OPTIONAL - commented out to allow cross-platform access)
-    /*
-    if (userData.platform && userData.platform !== platform) {
-      return res.status(403).json({
-        success: false,
-        error: `This account was registered for ${userData.platform} platform. Please use the correct platform to login.`,
-        code: 'PLATFORM_MISMATCH'
-      });
-    }
-    */
-
     // Verify password
     const isPasswordValid = await verifyPassword(password, userData.password);
     if (!isPasswordValid) {
@@ -878,6 +893,75 @@ app.post('/auth/change-password', authenticateToken, validateInput(['currentPass
       success: false,
       error: 'Failed to change password',
       code: 'CHANGE_PASSWORD_FAILED'
+    });
+  }
+});
+
+// ------------------ WEB PALM SIMULATION ENDPOINT ------------------
+
+// NEW: Web Palm Simulation Endpoint
+app.post('/web/palm/simulate', authenticateToken, async (req, res) => {
+  if (req.platform !== 'web') {
+    return res.status(403).json({ 
+      success: false, 
+      error: "This endpoint is for web platform only",
+      code: 'WEB_ONLY_FEATURE'
+    });
+  }
+
+  try {
+    const { landmarks, amount, upiId } = req.body;
+
+    if (typeof amount !== 'number' || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid payment amount',
+        code: 'INVALID_AMOUNT'
+      });
+    }
+
+    // Simulate palm verification for web (85% success rate)
+    const simulatedSuccess = Math.random() > 0.15;
+    
+    if (!simulatedSuccess) {
+      return res.status(401).json({
+        success: false,
+        error: 'Palm verification simulation failed. Please try again.',
+        code: 'VERIFICATION_FAILED'
+      });
+    }
+
+    // Create simulated transaction record
+    const transactionRef = await db.collection('transactions').add({
+      userId: req.user.userId,
+      type: 'web_payment_simulation',
+      amount: amount,
+      upiId: upiId || 'unknown',
+      description: 'Web palm payment simulation',
+      status: 'completed',
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      paymentMethod: 'web_palm_simulation',
+      platform: 'web'
+    });
+
+    res.json({
+      success: true,
+      message: 'Web payment simulation completed successfully',
+      data: {
+        transactionId: transactionRef.id,
+        amountPaid: amount,
+        currency: 'INR',
+        upiId: upiId,
+        isSimulation: true
+      }
+    });
+
+  } catch (error) {
+    console.error('Web palm simulation error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Payment simulation failed',
+      code: 'SIMULATION_ERROR'
     });
   }
 });
@@ -1306,7 +1390,8 @@ app.get('/health', (req, res) => {
     features: {
       passwordReset: true,
       emailService: !!process.env.EMAIL_USERNAME,
-      platformDetection: true
+      platformDetection: true,
+      webPalmSimulation: true
     }
   });
 });
@@ -1424,7 +1509,7 @@ app.listen(PORT, () => {
   console.log(`🔐 Password reset: Enabled`);
   console.log(`📱 Platform detection: Enabled`);
   console.log(`✨ Features:`);
-  console.log(`  - Web app: Authentication, Password reset`);
+  console.log(`  - Web app: Authentication, Password reset, Palm simulation`);
   console.log(`  - Mobile app: Full PalmPay features + Wallet + Palm verification`);
 });
 
