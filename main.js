@@ -5,7 +5,7 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const admin = require('firebase-admin');
-const tf = require('@tensorflow/tfjs-node'); // TensorFlow backend for Node.js
+const tf = require('@tensorflow/tfjs'); // TensorFlow backend for Node.js
 const Razorpay = require('razorpay');
 const multer = require('multer');
 const crypto = require('crypto');
@@ -225,7 +225,7 @@ console.log(`✅ Cashfree Payouts configured in ${isTestMode ? 'TEST' : 'PRODUCT
 console.log(`📡 Cashfree Base URL: ${CASHFREE_BASE_URL}`);
 
 // Email configuration
-const emailTransporter = nodemailer.createTransporter({
+const emailTransporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: process.env.EMAIL_USER || process.env.EMAIL_USERNAME,
@@ -1735,6 +1735,35 @@ app.post('/wallet/topup', authenticateToken, validateInput(['amount']), async (r
     });
   }
 });
+
+
+const ML_API_URL = process.env.ML_SERVICE_URL || 'http://localhost:5000';
+
+/**
+ * Send features embedding to Python ML service for prediction
+ * @param {Array} features Array of feature values for prediction
+ * @param {string} modelType 'knn' or 'rf' (optional, default 'knn')
+ * @returns {Promise<any>} Prediction result from ML service
+ */
+async function getPrediction(features, modelType = 'knn') {
+  try {
+    const response = await axios.post(`${ML_API_URL}/predict`, {
+      features: features,
+      model: modelType
+    });
+    return response.data.prediction;
+  } catch (error) {
+    console.error("Error calling ML service:", error.message || error);
+    throw error;
+  }
+}
+
+// Example usage in async context
+async function exampleUsage() {
+  const exampleFeatures = [ /* your feature values here */ ];
+  const prediction = await getPrediction(exampleFeatures, 'knn');
+  console.log('Prediction:', prediction);
+}
 
 // Continue with remaining endpoints (wallet verification, transactions, profile, etc.)
 // ... [rest of the endpoints remain the same, just with testMode added to responses]

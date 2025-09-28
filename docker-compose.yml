@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: dockerfile_nodejs
+    ports:
+      - "3000:3000"
+    depends_on:
+      - ml_service
+    environment:
+      - ML_SERVICE_URL=http://ml_service:5000
+      - NODE_ENV=production
+    env_file:
+      - .env
+  ml_service:
+    build:
+      context: .
+      dockerfile: docker_python
+    ports:
+      - "5000:5000"
+    environment:
+      - MODEL_PATH=./palm/models
