@@ -864,6 +864,11 @@ app.post('/auth/signup', authLimiter, validateInput(['email', 'password']), asyn
 
     await db.collection('users').doc(userId).set(userData);
 
+    // Send email asynchronously (do not await)
+    sendEmail(email, 'Welcome to PalmPay', '<p>Welcome to PalmPay!</p>')
+      .then(() => console.log(`Welcome email sent to ${email}`))
+      .catch(err => console.error(`Welcome email failed for ${email}:`, err));
+
     const token = generateToken(email, userId);
 
     delete userData.password;
@@ -886,6 +891,7 @@ app.post('/auth/signup', authLimiter, validateInput(['email', 'password']), asyn
     });
   }
 });
+
 
 // User Login
 app.post('/auth/login', authLimiter, validateInput(['email', 'password']), async (req, res) => {
