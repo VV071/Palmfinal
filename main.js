@@ -2077,7 +2077,72 @@ app.put('/profile', authenticateToken, async (req, res) => {
     });
   }
 });
+// Palm deregister endpoint
+app.delete('/palm/deregister', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.user;
 
+    // Check if user has palm registered
+    const userDoc = await db.collection('users').doc(userId).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found',
+        code: 'USER_NOT_FOUND'
+      });
+    }
+
+    const userData = userDoc.data();
+    
+    if (!userData.isPalmRegistered) {
+      return res.status(400).json({
+        success: false,
+        error: 'Palm biometrics not registered',
+        code: 'PALM_NOT_REGISTERED'
+      });
+    }
+
+    // Remove palm biometric data from all collections
+    const batch = db.batch();
+    
+    // Remove from palmIndex collection
+    const palmIndexRef = db.collection('palmIndex').doc(userId);
+    batch.delete(palmIndexRef);
+    
+    // Remove from palm_biometrics collection
+    const palmBiometricsRef = db.collection('palm_biometrics').doc(userId);
+    batch.delete(palmBiometricsRef);
+    
+    // Update user document
+    const userRef = db.collection('users').doc(userId);
+    batch.update(userRef, {
+      isPalmRegistered: false,
+      palmRegisteredAt: admin.firestore.FieldValue.delete(),
+      palmDeregisteredAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await batch.commit();
+
+    const modeText = isTestMode ? ' (TEST MODE)' : '';
+    console.log(`✅ Palm biometrics deregistered for user: ${userId}${modeText}`);
+    
+    res.json({
+      success: true,
+      message: `Palm biometrics deregistered successfully${modeText}`,
+      testMode: isTestMode
+    });
+  } catch (error) {
+    console.error('Palm deregistration error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to deregister palm biometrics',
+      code: 'SERVER_ERROR'
+    });
+  }
+});
+
+// Add this endpoint to your main.js file in the appropriate section
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
